@@ -159,4 +159,32 @@ mod tests {
             ]
         )
     }
+
+    #[test]
+    fn tokenize_multiline() {
+        const CONFIG: &str = r###"user       www www;  ## Default: nobody
+worker_processes  5;  ## Default: 1
+worker_rlimit_nofile 8192;"###;
+
+        let result = tokenize_nginx_config(CONFIG.as_bytes());
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token::String(b"user"),
+                Token::String(b"www"),
+                Token::String(b"www"),
+                Token::Semicolon,
+                Token::CommentStart,
+                Token::CommentLine(b"# Default: nobody"),
+                Token::String(b"worker_processes"),
+                Token::Int(5),
+                Token::Semicolon,
+                Token::CommentStart,
+                Token::CommentLine(b"# Default: 1"),
+                Token::String(b"worker_rlimit_nofile"),
+                Token::Int(8192),
+                Token::Semicolon,
+            ]
+        )
+    }
 }
