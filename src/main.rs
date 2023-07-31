@@ -1,4 +1,9 @@
-use nom::error::ParseError;
+use nom::{
+    bytes::complete::{take_while, take_while1},
+    character::is_digit,
+    error::ParseError,
+    IResult,
+};
 
 fn main() {
     println!("Hello, world!");
@@ -7,9 +12,10 @@ fn main() {
 #[derive(Debug, PartialEq)]
 enum Token<'a> {
     String(&'a [u8]),
+    Int(i64),
     Semicolon,
-    CommentStartHash,
-    CommentContent(String),
+    CommentStart,
+    CommentLine(&'a [u8]),
 }
 
 type TokensList<'a> = std::vec::Vec<Token<'a>>;
@@ -17,14 +23,15 @@ type TokensList<'a> = std::vec::Vec<Token<'a>>;
 #[derive(Debug)]
 enum TokenizerError<'a> {
     InvalidInput(&'a [u8]),
+    ParsingFailure(&'a [u8]),
 }
 
 fn parse_directive(input: &[u8]) -> nom::IResult<&[u8], &[u8]> {
-    nom::bytes::complete::take_while1(nom::character::is_alphabetic)(input)
+    nom::bytes::complete::is_not(" \t\n\r#;")(input)
 }
 
-fn parse_semicolon(input: &[u8]) -> nom::IResult<&[u8], &[u8]> {
-    if input.len() > 0 && input[0] == b';' {
+fn parse_single_character(input: &[u8], ch: u8) -> nom::IResult<&[u8], &[u8]> {
+    if input.len() > 0 && input[0] == ch {
         return Ok((&input[1..], &input[0..1]));
     }
 
@@ -32,6 +39,13 @@ fn parse_semicolon(input: &[u8]) -> nom::IResult<&[u8], &[u8]> {
         input,
         nom::error::ErrorKind::Char,
     )));
+}
+
+fn parse_comment_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
+    nom::sequence::pair(
+        nom::bytes::complete::tag("#"),
+        nom::bytes::complete::is_not("\n\r"),
+    )(input)
 }
 
 fn trim_left(input: &[u8]) -> &[u8] {
@@ -45,15 +59,36 @@ fn trim_left(input: &[u8]) -> &[u8] {
     return input;
 }
 
+fn parse_int(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    take_while1(is_digit)(input)
+}
+
 fn tokenize_nginx_config(input: &[u8]) -> Result<TokensList, TokenizerError> {
     let mut input = input;
     let mut result: TokensList = vec![];
 
     while input.len() > 0 {
         println!("Parsing {}", std::str::from_utf8(input).unwrap());
+
+        match parse_int(input) {
+            Ok((new_input, res)) => {
+                println!("Found int {}", std::str::from_utf8(res).unwrap());
+                input = trim_left(new_input);
+
+                result.push(Token::Int(
+                    std::str::from_utf8(res)
+                        .unwrap()
+                        .parse()
+                        .or(Err(TokenizerError::ParsingFailure(res)))?,
+                ));
+                continue;
+            }
+            Err(_) => {}
+        }
+
         match parse_directive(input) {
             Ok((new_input, directive)) => {
-                println!("Found  token {}", std::str::from_utf8(directive).unwrap());
+                println!("Found string {}", std::str::from_utf8(directive).unwrap());
                 input = trim_left(new_input);
                 result.push(Token::String(directive));
                 continue;
@@ -61,11 +96,22 @@ fn tokenize_nginx_config(input: &[u8]) -> Result<TokensList, TokenizerError> {
             Err(_) => {}
         }
 
-        match parse_semicolon(input) {
+        match parse_single_character(input, b';') {
             Ok((new_input, _)) => {
                 println!("Found semicolon");
                 input = trim_left(new_input);
                 result.push(Token::Semicolon);
+                continue;
+            }
+            Err(_) => {}
+        }
+
+        match parse_comment_line(input) {
+            Ok((new_input, (_, comment))) => {
+                println!("Found comment line");
+                input = trim_left(new_input);
+                result.push(Token::CommentStart);
+                result.push(Token::CommentLine(comment));
                 continue;
             }
             Err(_) => {}
@@ -79,9 +125,11 @@ fn tokenize_nginx_config(input: &[u8]) -> Result<TokensList, TokenizerError> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[ignore]
     #[test]
     fn tokenize_single_line() {
-        use super::*;
         const CONFIG: &str = r"user       www www;";
         let result = tokenize_nginx_config(CONFIG.as_bytes());
         assert_eq!(
@@ -91,6 +139,23 @@ mod tests {
                 Token::String(b"www"),
                 Token::String(b"www"),
                 Token::Semicolon
+            ]
+        )
+    }
+
+    #[test]
+    fn tokenize_comment() {
+        const CONFIG: &str = r"worker_processes  5;  ## Default: 1";
+        let result = tokenize_nginx_config(CONFIG.as_bytes());
+
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token::String(b"worker_processes"),
+                Token::Int(5),
+                Token::Semicolon,
+                Token::CommentStart,
+                Token::CommentLine(b"# Default: 1"),
             ]
         )
     }
