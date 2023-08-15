@@ -1,7 +1,10 @@
 use nom::{
     bytes::complete::{take_while, take_while1},
-    character::is_digit,
+    character::{complete::digit1, is_digit},
+    combinator::{consumed, opt, recognize},
+    complete::tag,
     error::ParseError,
+    sequence::tuple,
     IResult,
 };
 
@@ -63,7 +66,16 @@ fn trim_left(input: &[u8]) -> &[u8] {
 }
 
 fn parse_address(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    take_while1(is_digit)(input)
+    recognize(tuple((
+        digit1,
+        nom::bytes::complete::tag("."),
+        digit1,
+        nom::bytes::complete::tag("."),
+        digit1,
+        nom::bytes::complete::tag("."),
+        digit1,
+        opt(recognize(tuple((nom::bytes::complete::tag(":"), digit1)))),
+    )))(input)
 }
 
 fn parse_int(input: &[u8]) -> IResult<&[u8], &[u8]> {
@@ -76,6 +88,16 @@ fn tokenize_nginx_config(input: &[u8]) -> Result<TokensList, TokenizerError> {
 
     while input.len() > 0 {
         println!("Parsing {}", std::str::from_utf8(input).unwrap());
+
+        match parse_address(input) {
+            Ok((new_input, address)) => {
+                println!("found address");
+                input = trim_left(new_input);
+                result.push(Token::Address(address));
+                continue;
+            }
+            Err(_) => {}
+        }
 
         match parse_int(input) {
             Ok((new_input, res)) => {
@@ -152,9 +174,9 @@ fn tokenize_nginx_config(input: &[u8]) -> Result<TokensList, TokenizerError> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
-    #[ignore]
     #[test]
     fn tokenize_single_line() {
         const CONFIG: &str = r"user       www www;";
@@ -183,6 +205,24 @@ mod tests {
                 Token::Semicolon,
                 Token::CommentStart,
                 Token::CommentLine(b"# Default: 1"),
+            ]
+        )
+    }
+
+    #[test]
+    fn tokenize_address() {
+        const CONFIG: &str = r###"address 127.0.0.1;
+fastcgi_pass   127.0.0.1:1025;"###;
+        let result = tokenize_nginx_config(CONFIG.as_bytes());
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token::String(b"address"),
+                Token::Address(b"127.0.0.1"),
+                Token::Semicolon,
+                Token::String(b"fastcgi_pass"),
+                Token::Address(b"127.0.0.1:1025"),
+                Token::Semicolon,
             ]
         )
     }
@@ -312,7 +352,7 @@ worker_rlimit_nofile 8192;"###;
                 Token::String(b"\\.php$"),
                 Token::CurlyBracketLeft,
                 Token::String(b"fastcgi_pass"),
-                Token::String(b"127.0.0.1:1025"),
+                Token::Address(b"127.0.0.1:1025"),
                 Token::Semicolon,
                 Token::CurlyBracketRight,
                 Token::CurlyBracketRight,
